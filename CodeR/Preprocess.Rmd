@@ -1,0 +1,399 @@
+---
+title:    "Latent Gender Score"
+subtitle: "Preprocess Data"
+author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
+           Hans-Aloys Wischmann, Mascha Kern"
+date:     "** **\n\n
+           Revised:  March 26, 2025\n\n
+           Executed: `r format(Sys.time(), '%B %d, %Y')`"
+output:   "word_document"
+---
+
+```{r setup, include = FALSE}
+  start.time <- Sys.time()
+  source("./Common.R")
+```
+
+## SEM: Domain Knowledge Model
+
+```{r read_SEM_GDM}
+  # read the SEM and GDM models
+  source(domain_sem_file)
+  lavaan_sem <- lavaanify(sem_model)
+  sem_nodes <- setdiff(unique(c(lavaan_sem$lhs, lavaan_sem$rhs)), "gender")
+```
+
+## Configuration: Variables and Mappings
+
+```{r read_variables_config}
+  data_variables <- read_xlsx(data_dict_file) %>%
+    mutate(Values = str_replace_all(Values, c(";" = "\n", "," = "\n", "/" = "\n", "\n *" = "\n"))) %>%
+    mutate(File   = sprintf("%s%s.csv", data_path, File))
+
+  # ensure that each variable is loaded from a single file
+  if (nrow(data_variables %>% select(Variable, File) %>% group_by(Variable) %>% reframe(n = n()) %>% filter(n != 1)) != 0) {
+    stop("### More than one source file for variable(s)! ###")
+  }
+
+  # identify and eliminate common variables that are used to match across files 
+  match_variables <- data_variables %>% filter(Values == "MATCH") %>% distinct()
+  data_variables  <- data_variables %>% filter(!Variable %in% match_variables$Name)
+
+  # document variables to read and variables to use for matching
+  data_variables  %>% select(Variable, Name, Values, Mappings) %>%
+    mutate(Mappings = gsub("; *", "\n", Mappings)) %>%
+    flextable() %>% set_caption("Configuration: Data variables")  %>% border_outer() %>% border_inner_h() %>% border_inner_v() %>% autofit()
+  match_variables %>% select(Variable, Name, File) %>%
+    flextable() %>% set_caption("Configuration: Match variables") %>% border_outer() %>% border_inner_h() %>% border_inner_v() %>% autofit()
+
+  # extract all mappings, split into sequential actions retaining sequence (from left to right)
+  data_mappings <- data_variables %>% select(Variable, Mappings) %>% filter(!is.na(Mappings)) %>%
+    mutate(Mappings = str_split(gsub(" ", "", Mappings), "; *")) %>% unnest(Mappings) %>%
+    separate_wider_delim(Mappings, delim = ">", names = c("From", "To"))
+```
+
+## Load: Data
+
+```{r load}
+  # read variables to match by
+  df_all <- fread(match_variables$File[1], select = match_variables$Name)
+  colnames(df_all) <- match_variables$Variable
+
+  # read data variables and join to data frame
+  for (f in unique(data_variables$File)) {
+    cols <- data_variables %>% filter(File == f) %>% select(Variable, Name)
+    data <- fread(f, select = c(match_variables$Name, cols$Name))
+    colnames(data) <- c(match_variables$Variable, cols$Variable)
+    df_all <- left_join(df_all, data, by = match_variables$Variable)
+  }
+```
+
+## Apply: Mappings
+
+```{r mappings}
+  # apply all configured data mappings, in correct order
+  for (i in 1:nrow(data_mappings)) {
+    v <- data_mappings$Variable[i]
+    f <- data_mappings$From[i]
+    t <- data_mappings$To[i]
+    f <- ifelse(f == "<0", f, as.integer(f))
+    t <- ifelse(t == "NA", t, as.integer(t))
+
+    if (f != "<0" && t != "NA") {
+      df_all <- df_all %>% mutate(across(all_of(v), ~ifelse(.x == f,  t, .x)))
+    } else if (f != "<0" && t == "NA") {
+      df_all <- df_all %>% mutate(across(all_of(v), ~ifelse(.x == f, NA, .x)))
+    } else if (f == "<0" && t == "NA") {
+      df_all <- df_all %>% mutate(across(all_of(v), ~ifelse(.x <  0, NA, .x)))
+    } else {
+      stop(paste("### Unsupported mapping:", v, f, t, "###"))
+    }
+  }
+
+  # check for study years with relevant information
+  years <- df_all %>%
+    group_by(syear) %>% reframe(across(c(current_smoke, ever_smoke, stroke, migraine, hypertension, diabetes), ~sum(!is.na(.x)))) %>%
+    mutate(total = current_smoke + ever_smoke + stroke + migraine + hypertension + diabetes) %>% filter(total != 0) %>% arrange(syear)
+  years %>% mutate(syear = as.character(syear)) %>% flextable() %>% set_caption("Study Years with Required Info") %>% autofit()
+
+  # setting time window to include only years
+  print(paste("Removing study years before:", min(years$syear)))
+  df_all <- df_all %>% filter(syear >= min(years$syear))
+
+  # convert person ID and household ID to strings
+  df_all <- df_all %>% mutate(across(c(pid, hid), ~as.character(.x)))
+
+  # verify whether sex_binary, sex_or, and sex_entry_change are constant
+  inconsistent <- df_all %>%
+    group_by(pid) %>% reframe(across(starts_with("sex_"), ~sd(.x, na.rm = TRUE))) %>%
+    select(-pid)
+  if (sum(inconsistent, na.rm = TRUE) > 0) {
+    stop("### Inconsistent sex_* entries found ###")
+  }
+```
+
+## Consistency: Dx vs. no_illness
+
+```{r consistency_dx}
+  # check consistency within years
+  df_all %>% select(pid, syear, no_illness, hypertension, diabetes, migraine, stroke) %>%
+    mutate(syear = as.character(syear)) %>%
+    filter(no_illness == 1) %>% filter(hypertension == 1 | diabetes == 1 | migraine == 1 | stroke == 1) %>%
+    flextable() %>% set_caption("Records with inconsistent Dx, Individual Dx prevails") %>% autofit()
+  df_all <- df_all %>% select(-no_illness)
+```
+
+## Incidence: Migraine and Stroke
+
+```{r incidence}
+  # extract first available diagnosis, check for any later diagnosis
+  first_diagnosis <- df_all %>% select(pid, syear, migraine, stroke) %>%
+    group_by(pid) %>% arrange(syear) %>% reframe(across(everything(), ~as.integer(as.character(.x[which(!is.na(.x))[1]])))) %>%
+    select(-syear) %>% rename(first_migraine = migraine, first_stroke = stroke)
+  ever_diagnosis  <- df_all %>% select(pid, syear, migraine, stroke) %>%
+    group_by(pid) %>% arrange(syear) %>% reframe(across(everything(), ~sum(as.integer(as.character(.x)), na.rm = TRUE))) %>%
+    select(!syear) %>% mutate(across(-pid, ~pmin(.x, 1)))
+
+  # define incidence as increase between first and any later diagnosis
+  dx_incidence <- left_join(first_diagnosis, ever_diagnosis, join_by(pid)) %>%
+    left_join(., df_all %>% select(pid, sex_binary) %>% distinct(), join_by(pid)) %>%
+    mutate(migraine_incidence = pmax(migraine - first_migraine, 0), stroke_incidence = pmax(stroke - first_stroke, 0)) %>%
+    select(pid, sex_binary, first_migraine, first_stroke, migraine_incidence, stroke_incidence)
+```
+
+## Risk factors: Sequence of Dx and Smoking
+
+```{r sequence_dx}
+  # combine smoking information across ever_smoked and current_smoke
+  df_all <- df_all %>% mutate(smoke = pmax(ever_smoke, current_smoke, na.rm = TRUE)) %>% select(-ever_smoke, -current_smoke)
+
+  # temporal sequence of Dx and Smoking
+  smoke        <- df_all %>% filter(smoke        == 1) %>% arrange(syear) %>% group_by(pid) %>% slice(1) %>% select(pid, first_smoke        = syear)
+  stroke       <- df_all %>% filter(stroke       == 1) %>% arrange(syear) %>% group_by(pid) %>% slice(1) %>% select(pid, first_stroke       = syear)
+  migraine     <- df_all %>% filter(migraine     == 1) %>% arrange(syear) %>% group_by(pid) %>% slice(1) %>% select(pid, first_migraine     = syear)
+  diabetes     <- df_all %>% filter(diabetes     == 1) %>% arrange(syear) %>% group_by(pid) %>% slice(1) %>% select(pid, first_diabetes     = syear)
+  hypertension <- df_all %>% filter(hypertension == 1) %>% arrange(syear) %>% group_by(pid) %>% slice(1) %>% select(pid, first_hypertension = syear)
+  sequence_dx <- df_all %>% select(pid) %>% distinct() %>%
+    left_join(., smoke,        by = "pid") %>%
+    left_join(., stroke,       by = "pid") %>%
+    left_join(., migraine,     by = "pid") %>%
+    left_join(., diabetes,     by = "pid") %>%
+    left_join(., hypertension, by = "pid")
+  sequence_dx <- sequence_dx %>%
+    mutate(smoke_before_stroke          = !is.na(first_smoke)        & (first_smoke        < first_stroke   | is.na(first_stroke)))   %>%
+    mutate(smoke_before_migraine        = !is.na(first_smoke)        & (first_smoke        < first_migraine | is.na(first_migraine))) %>%
+    mutate(diabetes_before_stroke       = !is.na(first_diabetes)     & (first_diabetes     < first_stroke   | is.na(first_stroke)))   %>%
+    mutate(diabetes_before_migraine     = !is.na(first_diabetes)     & (first_diabetes     < first_migraine | is.na(first_migraine))) %>%
+    mutate(hypertension_before_stroke   = !is.na(first_hypertension) & (first_hypertension < first_stroke   | is.na(first_stroke)))   %>%
+    mutate(hypertension_before_migraine = !is.na(first_hypertension) & (first_hypertension < first_migraine | is.na(first_migraine))) %>%
+    select(pid, contains("before"))
+  sequence_dx %>%
+    reframe(across(everything(), ~sum(.x != FALSE, na.rm = TRUE))) %>%
+    pivot_longer(everything()) %>%
+    flextable() %>% set_caption("Sequence of Dx") %>% autofit()
+
+  # quick regressions on the raw data (with documented incidence yes/no for migraine and stroke, respectively)
+  incidence_sequence <- left_join(sequence_dx, dx_incidence, join_by(pid)) %>%
+    mutate(across(-pid, ~factor(ifelse(.x, "1", "0"), ordered = TRUE)))
+  data_stroke   <- incidence_sequence %>% filter(!is.na(stroke_incidence),   first_stroke   == 0) %>% select(sex_binary, contains("stroke"))
+  data_migraine <- incidence_sequence %>% filter(!is.na(migraine_incidence), first_migraine == 0) %>% select(sex_binary, contains("migraine"))
+  n_data_stroke      <- nrow(data_stroke)
+  n_data_migraine    <- nrow(data_migraine)
+  incidence_stroke   <- sum(as.integer(as.character(data_stroke$stroke_incidence)),     na.rm = TRUE)
+  incidence_migraine <- sum(as.integer(as.character(data_migraine$migraine_incidence)), na.rm = TRUE)
+  s_glm <- glm(stroke_incidence   ~ sex_binary + smoke_before_stroke   + diabetes_before_stroke   + hypertension_before_stroke,  
+               data = data_stroke, family = binomial(link = "logit"))
+  m_glm <- glm(migraine_incidence ~ sex_binary + smoke_before_migraine + diabetes_before_migraine + hypertension_before_migraine,
+               data = data_migraine, family = binomial(link = "logit"))
+  rr_with_ci(s_glm, sprintf("Stroke: Unadjusted (Incident = %d of %d)", incidence_stroke, n_data_stroke))
+  rr_with_ci(m_glm, sprintf("Migraine: Unadjusted (Incident = %d of %d)", incidence_migraine, n_data_migraine))
+```
+
+## Compute: Age,  Age at Immigration, Children in Household
+
+```{r children_in_household}
+  # compute age and age at immigration
+  df_all <- df_all %>%
+    mutate(age = syear - birth_year) %>%
+    mutate(age_group_at_immigration = ifelse(immigration_history != 2, 0, immi_year - birth_year)) %>%
+    select(-birth_year, -immi_year) %>%
+    mutate(age_group_at_immigration = case_when(age_group_at_immigration <  6 ~ 0,  # born in germany or immigrated pre-school
+                                                age_group_at_immigration < 12 ~ 1,  # immigrated during primary education
+                                                age_group_at_immigration < 18 ~ 2,  # immigrated during secondary education
+                                                TRUE                          ~ 3)) # immigrated as adult
+
+  # count number of children in current household by study year
+  nch <- df_all %>% group_by(syear, hid) %>% reframe(num_children_in_household = sum(age < 18, na.rm = TRUE))
+
+  # append number of children in household to data frame, and categorize 0 = none, 1 = single, 2 = multiple (2+)
+  df_all <- left_join(df_all, nch, by = c("syear", "hid")) %>% select(-hid) %>%
+    mutate(num_children_in_household = as.integer(pmin(num_children_in_household, 2))) %>%
+    mutate(across(c(age_group_at_immigration, num_children_in_household), ~factor(.x, ordered = TRUE)))
+
+  # compute age groups
+  df_all <- df_all %>% mutate(age_group = as.character(cut(age, c(18.0, 35.0, 50.0, 65.0, Inf), right = FALSE)))
+
+  # convert columns to ordered factors where possible
+  df_all <- df_all %>% mutate(across(where(~n_distinct(.x, na.rm = TRUE) <= 5), ~factor(.x, ordered = TRUE)))
+```
+
+## Filter: Adults with Reported Sex
+
+```{r age_adults_only}
+  # eliminate any and all data regarding minors, require info on sex_binary (exposure)
+  df_adults <- df_all %>% filter(age >= 18, !is.na(sex_binary))
+```
+
+## Valid Data: Most Recent with Outcome (Yes/No for Migraine Incidence and Stroke Incidence)
+
+```{r most_recent_entries_panels}
+  # retrieve most recent result for every variable for all participants, ignore weight_factor == 0
+  df_recent <- df_adults %>% mutate(weight_factor = ifelse(weight_factor <= 0.0, NA, weight_factor)) %>%
+    arrange(pid, desc(syear)) %>% group_by(pid) %>% reframe(across(everything(), ~.x[which(!is.na(.x))[1]]))
+
+  # analyze participants with both outcomes of interest, excluding existing (1st Dx) migraine or stroke
+  df_analysis <- left_join(df_recent, incidence_sequence %>% select(-sex_binary), join_by(pid)) %>% select(-pid)
+
+  # summarize prevalence and incidence before removing unknown and prevalent subjects
+  dx_incidence_table <- df_analysis %>% select(sex_binary, starts_with("first"), ends_with("incidence")) %>%
+    mutate(N_prev = 1, N_inci_mig = ifelse(first_migraine == 1, 0, 1), N_inci_str = ifelse(first_stroke == 1, 0, 1)) %>%
+    rename(migraine_prevalence_firstDx = first_migraine, stroke_prevalence_firstDx = first_stroke) %>%
+    group_by(sex_binary) %>% reframe(across(everything(), ~sum(.x > 0, na.rm = TRUE))) %>%
+    select(sex_binary, N_prev, contains("prevalence"), N_inci_mig, migraine_incidence, N_inci_str, stroke_incidence)
+  names(dx_incidence_table) <- gsub("_", "\n", names(dx_incidence_table))
+  dx_incidence_table %>%                                  
+    flextable() %>% set_caption("Adults: Prevalence and Incidence of Dx by Sex") %>% autofit()
+
+  # remove prevalent subjects
+  df_analysis <- df_analysis %>%
+    filter(!is.na(migraine_incidence), !is.na(stroke_incidence)) %>%
+    filter(first_migraine == 0, first_stroke == 0) %>%
+    select(-syear, -first_migraine, -first_stroke)
+
+  # document flow for data sets
+  print("Participants (Valid data elements)")
+  print(sprintf("All:       %6d <- %8d", n_distinct(df_all$pid),    sum(!is.na(df_all    %>% select(-pid, -syear)))))
+  print(sprintf("Adults:    %6d <- %8d", n_distinct(df_adults$pid), sum(!is.na(df_adults %>% select(-pid, -syear)))))
+  print(sprintf("Recent:    %6d <- %8d", n_distinct(df_recent$pid), sum(!is.na(df_recent %>% select(-pid, -syear)))))
+  print(sprintf("Analysis:  %6d <- %8d", nrow(df_analysis),         sum(!is.na(df_analysis))))
+  print(sprintf("Weight!=0: %6d",        nrow(df_analysis %>% filter(!is.na(weight_factor)))))
+
+  print(sprintf("Incidence over study years (excluding prevalent Migraine or prevalent Stroke), N=%d: Migraine (%d), Stroke (%d)",
+                nrow(df_analysis),
+                sum(df_analysis$migraine_incidence == 1, na.rm = TRUE),
+                sum(df_analysis$stroke_incidence   == 1, na.rm = TRUE)))
+
+  # document number of valid data points
+  df_table1 <- df_analysis %>% mutate(gross_hourly_wage = current_monthly_gross_labor_income / (4.35 * work_time))
+  df_table1 %>%
+    reframe(across(everything(), ~sum(!is.na(.x)))) %>% pivot_longer(everything()) %>%
+    mutate(SEM = case_when(name %in% sem_nodes ~ "As is",
+                           name == "age"       ~ "Scaled * 0.1",
+                           TRUE                ~ "")) %>%
+    arrange(desc(SEM), desc(value), name) %>% mutate(Fraction = round(100.0 * value / nrow(df_analysis), 1)) %>%
+    select(SEM, name, value, Fraction) %>%
+    flextable() %>% set_header_labels(values = c("SEM", "Variable", "N", "Fraction [%]")) %>% set_caption("Valid Data Points") %>% autofit()
+
+  # convert factor indices to speaking levels
+  lookup_labels <- function(tab, var) {
+    if (var == "age_group_at_immigration") {
+      return(c("< 6 | Born in Germany", "< 12", "< 18", "Adult"))
+    }
+    if (var == "age_group") {
+      return(levels(df_analysis$age_group))
+    }
+    if (var == "num_children_in_household") {
+      return(c("None", "Single", "Multiple"))
+    }
+    if (var %in% c("smoke_before_stroke",        "smoke_before_migraine",
+                   "diabetes_before_stroke",     "diabetes_before_migraine",
+                   "hypertension_before_stroke", "hypertension_before_migraine",
+                   "smoke", "stroke_incidence", "migraine_incidence")) {
+      return(c("No", "Yes"))
+    }
+    var <- ifelse(var %in% c("ever_stroke", "ever_migraine", "ever_diabetes", "ever_hypertension"), str_sub(var, 6, -1), var)
+    return(gsub("^ ", "", str_split_1(tab$Labels[tab$Variable == var], pattern = ";")))
+  }
+
+  df_table1 <- df_analysis
+  for (var in names(df_table1 %>% select(where(is.factor)))) {
+    labels <- lookup_labels(data_variables, var)
+    df_table1 <- df_table1 %>%
+      mutate(across(contains(var), ~ifelse(is.na(.x) | .x == "NA", "NA", labels[as.integer(.x)]))) %>%
+      mutate(across(contains(var), ~factor(.x, levels = labels)))
+  }
+
+  # document demographics and variables
+  t1flex(table1(~ age + age_group + sex_or + partner +
+                  smoke + hypertension + diabetes + migraine + stroke +
+                  num_children_in_household + daily_hours_childcare_weekdays + daily_hours_housework_weekdays +
+                  employment_status_imp + work_time + current_monthly_gross_labor_income +
+                  east_german_residence + immigration_history + age_group_at_immigration + .|sex_binary, data = df_table1)) %>%
+    set_caption("Table 1: Population (Current Status)")
+```
+
+## Missingness: Correlation Plot
+
+```{r missingness_patterns}
+  df_corr <- df_analysis %>% select(-age_group) %>% mutate(across(everything(), ~ifelse(is.na(.x), TRUE, FALSE)))
+
+  pngplot("./Results_Correlation_NA", 1.0,
+    as.data.frame(cor(df_corr %>% select(where(~sum(.x) != 0)))) %>%
+    mutate(var1 = rownames(.)) %>%
+    pivot_longer(!var1, names_to = "var2", values_to = "Pearson") %>%
+    mutate(x = var1 %in% c(sem_nodes, "age")) %>% arrange(!x, var1) %>% mutate(var1 = fct_inorder(var1)) %>%
+    mutate(x = var2 %in% c(sem_nodes, "age")) %>% arrange(!x, var2) %>% mutate(var2 = fct_inorder(var2)) %>%
+    ggplot(aes(x = var1, y = var2, fill = Pearson)) +
+      geom_tile() +
+      scale_y_discrete(limits = rev) +
+      labs(x = "", y = "", title = "Correlation for Missing Data (NA)") +
+      scale_fill_gradient2(low = "red", mid = "white", high = "blue", limits = c(-1, 1)) +
+      theme(axis.text.y = element_text(size = 5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5)))
+```
+
+## Correlations: Spearman
+
+```{r corrplots_spearman}
+  df_corr <- df_analysis %>% select(-age_group) %>% mutate(across(where(is.factor), ~as.numeric(as.character(.x))))
+
+  pngplot("./Results_Correlation_Spearman", 1.0,
+    as.data.frame(cor(df_corr, use = "pairwise.complete.obs", method = "spearman")) %>%
+    mutate(var1 = rownames(.)) %>%
+    pivot_longer(!var1, names_to = "var2", values_to = "Spearman") %>%
+    mutate(x = var1 %in% c(sem_nodes, "age")) %>% arrange(!x, var1) %>% mutate(var1 = fct_inorder(var1)) %>%
+    mutate(x = var2 %in% c(sem_nodes, "age")) %>% arrange(!x, var2) %>% mutate(var2 = fct_inorder(var2)) %>%
+    ggplot(aes(x = var1, y = var2, fill = Spearman)) +
+      geom_tile() +
+      scale_y_discrete(limits = rev) +
+      labs(x = "", y = "", title = "Correlation for Data (Pairwise !NA)") +
+      scale_fill_gradient2(low = "red", mid = "white", high = "blue", limits = c(-1, 1)) +
+      theme(axis.text.y = element_text(size = 5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5)))
+```
+
+## Monthly Gross: Clip at Percentile 99.99
+
+```{r clip}
+  # clip monthly income at percentile 99.99 (to limit imputation impact from outliers)
+  quantile_9999 <- quantile(df_analysis$current_monthly_gross_labor_income, 0.9999, na.rm = TRUE)
+
+  # document clips
+  df_analysis %>% filter(current_monthly_gross_labor_income > quantile_9999) %>%
+    select(current_monthly_gross_labor_income) %>%
+    flextable() %>%
+    set_caption(sprintf("Current monthly gross labor incomes clipped at percentile 99.99 (%0.f EUR)", quantile_9999)) %>%
+    autofit()
+
+  # implement clips
+  df_analysis <- df_analysis %>% mutate(across(current_monthly_gross_labor_income, ~pmin(.x, quantile_9999)))
+```
+
+## Imputation
+
+```{r impute}
+  print(paste("MICE imputations: m =", m_mice))
+
+  # limit BLAS to 1 (per parallel future)
+  blas_set_num_threads(1)
+
+  # reset weight factors to 0 if they were previously flagged as NA
+  df_analysis <- df_analysis %>% mutate(weight_factor = ifelse(is.na(weight_factor), 0.0, weight_factor))
+
+  # compute MICE in parallel
+  df_analysis <- futuremice(df_analysis, m = m_mice, logical = TRUE, parallelseed = 314159, n.core = get_num_cores())
+  
+  # summarize imputation methods used
+  data.frame(Variable = names(df_analysis$method), Method = as.vector(df_analysis$method)) %>%
+    mutate(Method = ifelse(Method == "", "-", Method)) %>%
+    arrange(Variable) %>%
+    group_by(Method) %>% reframe(Variables = paste(Variable, collapse = ", ")) %>%
+    flextable() %>% set_caption("MICE: Imputation methods applied") %>%
+    width(width = c(1.0, 5.0), unit = "in")
+```
+
+## Save
+
+```{r save}
+  # save tidy tables in compressed format
+  save(df_analysis, file = data_prep_file, compress = "xz")
+  print(Sys.time() - start.time)
+```

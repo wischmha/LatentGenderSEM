@@ -1,0 +1,72 @@
+---
+title:    "Latent Gender Score"
+subtitle: "Process Data: Causal Discovery"
+author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
+           Hans-Aloys Wischmann, Mascha Kern"
+date:     "** **\n\n
+           Revised:  March 27, 2025\n\n
+           Executed: `r format(Sys.time(), '%B %d, %Y')`"
+output:   "word_document"
+---
+
+```{r setup, include = FALSE}
+  start.time <- Sys.time()
+  source("./Common.R")
+```
+
+## Load: SEM Domain Knowledge Model, Preprocessed Data
+
+```{r load_preprocessed}
+  # read the SEM models and the preprocessed data
+  source(domain_sem_file)
+  load(file = data_prep_file)
+
+  # append hourly_wage, append scaled age (unit increment equals +10 years), normalize weights
+  df_all <- complete(df_analysis, action = "long", include = TRUE) %>%
+    mutate(age_10y = 0.1 * age) %>%
+    mutate(gross_hourly_wage = current_monthly_gross_labor_income / (4.35 * work_time)) %>%
+    mutate(across(c(current_monthly_gross_labor_income, gross_hourly_wage), ~((.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE)))) %>%
+    group_by(.imp) %>% mutate(weight_factor = n() * weight_factor / sum(weight_factor, na.rm = TRUE)) %>% ungroup()
+
+  # single frames of all imputed datasets, continuous and with factors
+  df_dag <- df_all %>% filter(.imp == 0) %>% select(-.imp)
+  df_cmp <- df_all %>% filter(.imp != 0) %>% select(-.imp) %>%
+    mutate(across(!age_group & where(is.factor), ~as.integer(as.character(.x))))
+
+  # predict gender distribution (from sensitivity model by age_group)
+  sem_all <- sem(sem_model_wo_age, data = df_cmp, auto.fix.first = FALSE, group = "age_group")
+  df_cmp <- df_cmp %>% mutate(gender = lavPredict(sem_all, type = "lv", assemble = TRUE)[,"gender"])
+
+  # append mean estimated gender to raw data, save for for causal discovery
+  df_dag <- left_join(df_dag, df_cmp %>% select(.id, gender) %>% group_by(.id) %>% reframe(gender = mean(gender)), by = ".id")
+```
+
+## Causal Discovery: Continuous Imputed Data
+
+```{r discovery_imp_data}
+  df_cont  <- df_cmp %>% select(-.id, -age_10y, -age_group, -weight_factor)
+  pc_cont  <- pc(suffStat = list(C = cor(df_cont), n = nrow(df_cont)),
+                 indepTest = gaussCItest, alpha = 0.01, labels = colnames(df_cont),
+                 skel.method = "stable.fast", numCores = get_num_cores())
+  DAG_cont <- pcalg2dagitty(as(pc_cont, "amat"), labels = colnames(df_cont), type = "dag")
+  print("DAG (continuous, gaussCItest)")
+  print(DAG_cont)
+  save(DAG_cont, file = "./Results_Causal_Discovery_DAG.Rdata")
+```
+
+## Causal Discovery: Categorical Raw Data
+
+```{r discovery_raw_data}
+  df_flex  <- df_dag %>% select(-.id, -age_10y, -age_group, -weight_factor)
+  pc_flex  <- pc(suffStat = df_flex, indepTest = flexCItwd, alpha = 0.01, labels = colnames(df_flex), skel.method = "stable.fast")
+  DAG_flex <- pcalg2dagitty(as(pc_flex, "amat"), labels = colnames(df_flex), type = "dag")
+  print("DAG (flexCItwd)")
+  print(DAG_flex)
+  save(DAG_cont, DAG_flex, file = "./Results_Causal_Discovery_DAG.Rdata")
+```
+
+## Done
+
+```{r done}
+  print(Sys.time() - start.time)
+```

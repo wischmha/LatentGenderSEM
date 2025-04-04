@@ -1,0 +1,206 @@
+---
+title:    "Latent Gender Score"
+subtitle: "Process Data: Fit SEM and GDM"
+author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
+           Hans-Aloys Wischmann, Mascha Kern"
+date:     "** **\n\n
+           Revised:  March 27, 2025\n\n
+           Executed: `r format(Sys.time(), '%B %d, %Y')`"
+output:   "word_document"
+---
+
+```{r setup, include = FALSE}
+  start.time <- Sys.time()
+  source("./Common.R")
+```
+
+## Load: Preprocessed Data
+
+```{r load_preprocessed}
+  load(file = data_prep_file)
+
+  # append hourly_wage, append scaled age (unit increment equals +10 years), normalize weights
+  df_all <- complete(df_analysis, action = "long", include = TRUE) %>%
+    mutate(age_10y = 0.1 * age) %>%
+    mutate(gross_hourly_wage = current_monthly_gross_labor_income / (4.35 * work_time)) %>%
+    mutate(across(c(current_monthly_gross_labor_income, gross_hourly_wage), ~((.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE)))) %>%
+    group_by(.imp) %>% mutate(weight_factor = n() * weight_factor / sum(weight_factor, na.rm = TRUE)) %>% ungroup()
+
+  # continuous dataset with factors converted to integer data, convert back to mids
+  df_con <- df_all %>% mutate(across(!age_group & where(is.factor), ~as.integer(as.character(.x))))
+
+  # single frames of all imputed datasets, continuous and with factors
+  df_cmp <- df_con %>% filter(.imp != 0) # continuous
+  df_gdm <- df_all %>% filter(.imp != 0) # with factors
+```
+
+## SEM: Domain Knowledge Model
+
+```{r read_SEM_GDM_models}
+  # read the SEM and GDM models
+  source(domain_sem_file)
+  lavaan_sem <- lavaanify(sem_model)
+  sem_nodes <- setdiff(unique(c(lavaan_sem$lhs, lavaan_sem$rhs)), "gender")
+
+  # manually lay out the SEM (hard to automate)
+  sem_layout <- get_layout(
+    "num_children_in_household", "risk_taking_scale", "highest_educational_degree",
+    "political_interest", "employment_status_imp", "gross_hourly_wage", "",
+    "", "daily_hours_childcare_weekdays", "", "", "", "num_physician_visits", "east_german_residence",
+    "", "daily_hours_housework_weekdays", "", "gender", "", "current_monthly_gross_labor_income", "",
+    "partner", "current_mat_parent_leave", "", "", "", "", "age_10y",
+    "", "", "", "sex_binary", "", "", "",
+    "", "migraine_incidence", "", "", "", "stroke_incidence", "",
+    "", "", "", "sex_or", "", "", "",
+    "smoke_before_migraine", "diabetes_before_migraine", "hypertension_before_migraine",
+    "immigration_history", "hypertension_before_stroke", "diabetes_before_stroke", "smoke_before_stroke",
+    rows = 8)
+```
+
+## SEM
+
+Single pass, all endogeneous variables are continuous
+
+```{r sem_fit}
+  print("SEM Model")
+  writeLines(sem_model)
+
+  print("SEM Model without age for stratification by age, without current_mat_parent_leave for 65+")
+  writeLines(sem_model_wo_age)
+
+  sem_mi_all <- sem.mi(sem_model,        data = as.mids(df_con), auto.fix.first = FALSE)
+  sem_mi_age <- sem.mi(sem_model_wo_age, data = as.mids(df_con), auto.fix.first = FALSE, group = "age_group")
+  sem_mi_wgh <- sem.mi(sem_model,        data = as.mids(df_con), auto.fix.first = FALSE, sampling.weights = "weight_factor",
+                                                                                         sampling.weights.normalization = "none",
+                                                                                         observed.information = "h1")
+
+  tab_mi_all <- summary(sem_mi_all, ci = TRUE, fit.measures = TRUE, output = "data.frame")
+  tab_mi_age <- summary(sem_mi_age, ci = TRUE, fit.measures = TRUE, output = "data.frame")
+  tab_mi_wgh <- summary(sem_mi_wgh, ci = TRUE, fit.measures = TRUE, output = "data.frame")
+```
+
+## SEM: Outcomes
+
+```{r sem_outcomes}
+  # extract outcome coefficients with confidence intervals
+  left_join(tab_mi_all$pe %>% filter(grepl("incidence", lhs), op == "~") %>%
+              mutate(estimate = sprintf("%.3f [%.3f, %.3f]", est, ci.lower, ci.upper)) %>%
+              mutate(sig = print_p(pvalue)) %>%
+              select(incidence = lhs, predictor = rhs, estimate, sig),
+            tab_mi_wgh$pe %>% filter(grepl("incidence", lhs), op == "~") %>%
+              mutate(estimate.w = sprintf("%.3f [%.3f, %.3f]", est, ci.lower, ci.upper)) %>%
+              mutate(sig.w = print_p(pvalue)) %>%
+              select(incidence = lhs, predictor = rhs, estimate.w, sig.w),
+            by = c("incidence", "predictor")) %>%
+    mutate(incidence = gsub("_incidence", "", incidence)) %>%
+    flextable() %>% set_caption("SEM (sem.mi) Regressions (unweighted/weighted)") %>%
+    hline(i = 9) %>% autofit()
+  tab_mi_age$pe %>% filter(grepl("incidence", lhs), op == "~") %>%
+    mutate(est = round(est, 3)) %>%
+    mutate(group = levels(df_analysis$data$age_group)[group]) %>%
+    select(group, outcome = lhs, predictor = rhs, est) %>%
+    pivot_wider(names_from = group, values_from = est) %>%
+    flextable() %>% set_caption("SEM (sem.mi) Regressions by Age Group, unweighted") %>% autofit() %>%
+    hline(i = 8) %>% autofit()
+  
+  # Document fit metrics
+  all <- tab_mi_all$fit[c("rmsea", "srmr", "aic")]
+  wgh <- tab_mi_wgh$fit[c("rmsea", "srmr", "aic")]
+  age <- tab_mi_age$fit[c("rmsea", "srmr", "aic")]
+  cbind(as.data.frame(all), as.data.frame(wgh), as.data.frame(age)) %>%
+    mutate(fit_metric = rownames(.)) %>%
+    mutate(fit_metric = str_replace_all(fit_metric,
+                                        c("aic"   = "AIC:   Akaike Information Criterion",
+                                          "rmsea" = "RMSEA: Root Mean Square Error of Approximation",
+                                          "srmr"  = "SRMSR: Standardized Root Mean Square Residual"))) %>%
+    select(fit_metric, all, wgh, age) %>%
+    mutate(across(!fit_metric, ~round(.x, 3))) %>%
+    flextable() %>% set_caption("SEM Models - Fit Info") %>% autofit()
+```
+
+## SEM: Gender Statistics and Plots
+
+Scale of latent variable gender is fixed at same scale as sex_binary, so mean gender for M = 0, for F = 1.
+
+```{r gender_SEM}
+  # plot SEM (for all imputations combined)
+  sem_all <- sem(sem_model, data = df_cmp, auto.fix.first = FALSE)
+  node_names <- get_nodes(sem_all, label = str_replace_all(name, c("current_" = "", "age_10y" = "age", "_" = "\n")))
+  graph_sem(model = sem_all, layout = sem_layout, nodes = node_names, angle = 180.0,
+            text_size = 1.3, rect_width = 1.6, rect_height = 1.5,
+            ellipses_width = 1.0, ellipses_height = 1.0, fix_coord = TRUE)
+
+  # analyze gender distribution (from sensitivity model by age_group)
+  sem_all <- sem(sem_model_wo_age, data = df_cmp, auto.fix.first = FALSE, group = "age_group")
+  df_cmp <- df_cmp %>% mutate(gender = lavPredict(sem_all, type = "lv", assemble = TRUE)[,"gender"]) %>%
+    mutate(sex_binary = ifelse(sex_binary == 0, "Sex_M", "Sex_F"))
+
+  # provide statistics for latent variable gender stratified by binary sex
+  df_cmp %>%
+    mutate(age_group = paste("Ages_", age_group, sep = "")) %>%
+    group_by(age_group, sex_binary) %>% reframe(mean_gender = round(mean(gender), 3), sd_gender = round(sd(gender), 3)) %>%
+    flextable() %>% set_caption("SEM: Mean/SD for latent gender by sex_binary") %>% autofit()
+
+  # plot distribution of latent variable gender stratified by binary sex
+  df_cmp %>%
+    mutate(age_group = paste("Ages_", age_group, sep = "")) %>%
+    mutate(gender = pmin(pmax(gender, -4), 5)) %>%
+    ggplot(aes(x = gender)) + geom_histogram(binwidth = 0.05) +
+      labs(x = "Gender (SEM)", y = "Frequency") +
+      facet_grid(vars(sex_binary), vars(age_group))
+
+  # plot distribution of latent variable gender stratified by immigration background
+  df_cmp %>%
+    mutate(immigration_history = paste("Migration_", immigration_history, sep = "")) %>%
+    mutate(gender = pmin(pmax(gender, -4), 5)) %>%
+    ggplot(aes(x = gender)) + geom_histogram(binwidth = 0.10) +
+      labs(x = "Gender (SEM)", y = "Frequency") +
+      facet_grid(vars(sex_binary), vars(immigration_history))
+```
+
+## GDM: Fit
+
+```{r GDM}
+  print("GDM Model (stratification by age group), common outcomes model (without age)")
+  writeLines(gdm_model)
+  writeLines(m_dx_wo_age)
+  writeLines(s_dx_wo_age)
+
+  # GDM: Benchmark analysis (step one - use predicted probability for binary sex as proxy for gender)
+  gdm_age <- df_gdm %>% glm(as.formula(gdm_model), data = ., family = binomial(link = logit))
+  df_gdm  <- df_gdm %>% mutate(gender = predict(gdm_age, newdata = ., type = "response"))
+
+  # plot distribution of latent variable gender stratified by binary sex
+  df_gdm %>%
+    mutate(sex_binary = ifelse(sex_binary == 0, "Sex_M", "Sex_F")) %>%
+    mutate(age_group = paste("Ages_", age_group, sep = "")) %>%
+    ggplot(aes(x = gender)) + geom_histogram(binwidth = 0.05) +
+      labs(x = "Gender (GDM)", y = "Frequency") +
+      facet_grid(vars(sex_binary), vars(age_group))
+
+  # GDM (step two), apply regressions across all imputed datasets
+  m_dx_f <- as.formula(m_dx_wo_age)
+  s_dx_f <- as.formula(s_dx_wo_age)
+  rr_with_ci(glm(m_dx_f, data = df_gdm %>% filter(age_group == "[65,Inf)"), family = binomial(link = logit)), "Migraine Incidence, 65+")
+  rr_with_ci(glm(m_dx_f, data = df_gdm %>% filter(age_group == "[50,65)"),  family = binomial(link = logit)), "Migraine Incidence, 50-64")
+  rr_with_ci(glm(m_dx_f, data = df_gdm %>% filter(age_group == "[35,50)"),  family = binomial(link = logit)), "Migraine Incidence, 35-50")
+  rr_with_ci(glm(m_dx_f, data = df_gdm %>% filter(age_group == "[18,35)"),  family = binomial(link = logit)), "Migraine Incidence, 18-35")
+  rr_with_ci(glm(s_dx_f, data = df_gdm %>% filter(age_group == "[65,Inf)"), family = binomial(link = logit)), "Stroke Incidence, 65+")
+  rr_with_ci(glm(s_dx_f, data = df_gdm %>% filter(age_group == "[50,65)"),  family = binomial(link = logit)), "Stroke Incidence, 50-64")
+  rr_with_ci(glm(s_dx_f, data = df_gdm %>% filter(age_group == "[35,50)"),  family = binomial(link = logit)), "Stroke Incidence, 35-50")
+  rr_with_ci(glm(s_dx_f, data = df_gdm %>% filter(age_group == "[18,35)"),  family = binomial(link = logit)), "Stroke Incidence, 18-35")
+```
+
+## Details
+
+```{r sem_fit_details}
+  tab_mi_all
+  tab_mi_age
+  tab_mi_wgh
+```
+
+## Done
+
+```{r done}
+  print(Sys.time() - start.time)
+```

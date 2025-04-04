@@ -1,0 +1,61 @@
+---
+title:    "Latent Gender Score"
+subtitle: "Process Data: Causal Discovery"
+author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
+           Hans-Aloys Wischmann, Mascha Kern"
+date:     "** **\n\n
+           Revised:  March 27, 2025\n\n
+           Executed: `r format(Sys.time(), '%B %d, %Y')`"
+output:   "word_document"
+---
+
+```{r setup, include = FALSE}
+  start.time <- Sys.time()
+  source("./Common.R")
+
+  # utility function to apply configured (clean) layout to DAG prior to plotting it
+  plot_DAG <- function(dag, coords, name) {
+    tidy_dag <- as.data.frame(tidy_dagitty(dag)) %>% select(-x, -y, -xend, -yend) %>%
+      left_join(., coords,                   join_by("name"))         %>% rename(x    = xnew, y    = ynew) %>%
+      left_join(., coords %>% select(!type), join_by("to" == "name")) %>% rename(xend = xnew, yend = ynew) %>%
+      mutate(type = factor(type)) %>%
+      mutate(name = gsub("[ _]", "\n", name))
+    nodes <- tidy_dag %>% select(name, direction, x, y, type) %>%
+      mutate(direction = NA, circular = FALSE, xend = NA, yend = NA, to = "") %>% distinct()
+    edges <- tidy_dag %>% select(name, direction, x, y, type, circular, xend, yend) %>%
+      filter(!is.na(direction)) %>% mutate(name = "", to = "")
+    pngplot(name, 0.7,
+      rbind(nodes, edges) %>%
+      ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+        geom_dag_edges(edge_color = "#CFCFCF") +
+        geom_dag_point(aes(color = type), size = 5.0) +
+        geom_dag_text(color = "#000000", size = 2.0) +
+        scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999", "#007F7F", "#7F007F")) +
+        theme_dag() +
+        scale_adjusted() +
+        labs(color = "Node Types") +
+        theme(legend.position = "right"))
+  }
+```
+
+## Load: DAGs and Layouts
+
+```{r load_DAGs_layout}
+  source("../Config/Domain_Knowledge_DAG.R")
+  load("./Results_Causal_Discovery_DAG.Rdata")
+  layout_DAG <- read_xlsx(data_vpos_file)
+```
+
+## Plot: Domain Knowledge DAG, Causal Discovery DAG
+
+```{r plot_DAGs}
+  plot_DAG(DAG_know, layout_DAG %>% filter(source == "know"), "./Results_Domain_Knowledge_DAG")
+  plot_DAG(DAG_cont, layout_DAG %>% filter(source == "disc"), "./Results_Causal_Discovery_Continuous_DAG")
+  plot_DAG(DAG_flex, layout_DAG %>% filter(source == "disc"), "./Results_Causal_Discovery_Categorical_DAG")
+```
+
+## Done
+
+```{r done}
+  print(Sys.time() - start.time)
+```
