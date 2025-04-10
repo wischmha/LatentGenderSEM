@@ -4,7 +4,7 @@ subtitle: "Process Data: Causal Discovery"
 author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
            Hans-Aloys Wischmann, Mascha Kern"
 date:     "** **\n\n
-           Revised:  March 27, 2025\n\n
+           Revised:  April 07, 2025\n\n
            Executed: `r format(Sys.time(), '%B %d, %Y')`"
 output:   "word_document"
 ---
@@ -24,7 +24,7 @@ output:   "word_document"
       mutate(direction = NA, circular = FALSE, xend = NA, yend = NA, to = "") %>% distinct()
     edges <- tidy_dag %>% select(name, direction, x, y, type, circular, xend, yend) %>%
       filter(!is.na(direction)) %>% mutate(name = "", to = "")
-    pngplot(name, 0.7,
+    plot_pdf_png(name, 0.7,
       rbind(nodes, edges) %>%
       ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
         geom_dag_edges(edge_color = "#CFCFCF") +

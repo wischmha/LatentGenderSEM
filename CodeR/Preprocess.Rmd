@@ -4,7 +4,7 @@ subtitle: "Preprocess Data"
 author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
            Hans-Aloys Wischmann, Mascha Kern"
 date:     "** **\n\n
-           Revised:  March 26, 2025\n\n
+           Revised: April 07, 2025\n\n
            Executed: `r format(Sys.time(), '%B %d, %Y')`"
 output:   "word_document"
 ---
@@ -299,8 +299,8 @@ output:   "word_document"
   for (var in names(df_table1 %>% select(where(is.factor)))) {
     labels <- lookup_labels(data_variables, var)
     df_table1 <- df_table1 %>%
-      mutate(across(contains(var), ~ifelse(is.na(.x) | .x == "NA", "NA", labels[as.integer(.x)]))) %>%
-      mutate(across(contains(var), ~factor(.x, levels = labels)))
+      mutate(across(all_of(var), ~ifelse(is.na(.x) | .x == "NA", "NA", labels[as.integer(.x)]))) %>%
+      mutate(across(all_of(var), ~factor(.x, levels = labels)))
   }
 
   # document demographics and variables
@@ -317,7 +317,8 @@ output:   "word_document"
 ```{r missingness_patterns}
   df_corr <- df_analysis %>% select(-age_group) %>% mutate(across(everything(), ~ifelse(is.na(.x), TRUE, FALSE)))
 
-  pngplot("./Results_Correlation_NA", 1.0,
+  print("Correlation for Missing Data (NA)")
+  plot_pdf_png("./Results_Correlation_NA", 1.0,
     as.data.frame(cor(df_corr %>% select(where(~sum(.x) != 0)))) %>%
     mutate(var1 = rownames(.)) %>%
     pivot_longer(!var1, names_to = "var2", values_to = "Pearson") %>%
@@ -326,9 +327,9 @@ output:   "word_document"
     ggplot(aes(x = var1, y = var2, fill = Pearson)) +
       geom_tile() +
       scale_y_discrete(limits = rev) +
-      labs(x = "", y = "", title = "Correlation for Missing Data (NA)") +
+      labs(x = "", y = "") +
       scale_fill_gradient2(low = "red", mid = "white", high = "blue", limits = c(-1, 1)) +
-      theme(axis.text.y = element_text(size = 5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5)))
+      theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5)))
 ```
 
 ## Correlations: Spearman
@@ -336,7 +337,8 @@ output:   "word_document"
 ```{r corrplots_spearman}
   df_corr <- df_analysis %>% select(-age_group) %>% mutate(across(where(is.factor), ~as.numeric(as.character(.x))))
 
-  pngplot("./Results_Correlation_Spearman", 1.0,
+  print("Correlation for Data (Pairwise !NA)")
+  plot_pdf_png("./Results_Correlation_Spearman", 1.0,
     as.data.frame(cor(df_corr, use = "pairwise.complete.obs", method = "spearman")) %>%
     mutate(var1 = rownames(.)) %>%
     pivot_longer(!var1, names_to = "var2", values_to = "Spearman") %>%
@@ -345,9 +347,9 @@ output:   "word_document"
     ggplot(aes(x = var1, y = var2, fill = Spearman)) +
       geom_tile() +
       scale_y_discrete(limits = rev) +
-      labs(x = "", y = "", title = "Correlation for Data (Pairwise !NA)") +
+      labs(x = "", y = "") +
       scale_fill_gradient2(low = "red", mid = "white", high = "blue", limits = c(-1, 1)) +
-      theme(axis.text.y = element_text(size = 5), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5)))
+      theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5)))
 ```
 
 ## Monthly Gross: Clip at Percentile 99.99

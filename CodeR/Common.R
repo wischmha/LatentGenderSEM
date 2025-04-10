@@ -1,6 +1,6 @@
 # Charité - Universitätsmedizin Berlin, Institut fur Public Health
 # Hans-Aloys Wischmann
-# March 23, 2025
+# April 07, 2025
 
   # ensure consistency across systems, define presets, set default figure size
   Sys.setlocale("LC_ALL", 'de_DE.UTF-8')
@@ -47,14 +47,16 @@
   blas_set_num_threads(get_num_cores())
 
   # utility function to plot to *.png file and inline
-  plot_res   <- 1200
-  plot_width <- 7.0
-  pngplot <- function(file_name, aspect_ratio, plot_object) {
-    print(plot_object)
-    plot_file <- sprintf("%s.png", file_name)
-    png(plot_file, width = plot_width, height = plot_width * aspect_ratio, units = "in", res = plot_res)
-    print(plot_object)
+  ggplot_font_size = 10 # font size for all texts except for geom_text, in points
+  plot_pdf_png <- function(file_name, aspect_ratio, plot_object, plot_width = 6.7, plot_res = 1200) {
+    themed_object <- plot_object + theme(text = element_text(size = ggplot_font_size), plot.title = element_text(size = ggplot_font_size))
+    pdf(sprintf("%s.pdf", file_name), plot_width, plot_width * aspect_ratio, paper = "a4")
+    print(themed_object)
     ignore <- dev.off()
+    png(sprintf("%s.png", file_name), width = plot_width, height = plot_width * aspect_ratio, units = "in", res = plot_res)
+    print(themed_object)
+    ignore <- dev.off()
+    knitr::include_graphics(sprintf("%s.png", file_name), dpi = 1200)
   }
 
   # convert p.value to stars  
