@@ -4,7 +4,7 @@ subtitle: "Preprocess Data"
 author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
            Hans-Aloys Wischmann, Mascha Kern"
 date:     "** **\n\n
-           Revised: April 07, 2025\n\n
+           Revised: July 07, 2025\n\n
            Executed: `r format(Sys.time(), '%B %d, %Y')`"
 output:   "word_document"
 ---
@@ -395,7 +395,8 @@ output:   "word_document"
 ## Save
 
 ```{r save}
-  # save tidy tables in compressed format
+  # save tidy tables in compressed format, document version of RStudio, R, and attacheds packages
   save(df_analysis, file = data_prep_file, compress = "xz")
   print(Sys.time() - start.time)
+  sessionInfo()
 ```

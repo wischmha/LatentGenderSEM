@@ -1,6 +1,6 @@
-# Charité - Universitätsmedizin Berlin, Institut fur Public Health
+# Charité - Universitätsmedizin Berlin, Institut für Public Health
 # Hans-Aloys Wischmann
-# April 07, 2025
+# July 07, 2025
 
   # ensure consistency across systems, define presets, set default figure size
   Sys.setlocale("LC_ALL", 'de_DE.UTF-8')
@@ -42,7 +42,7 @@
   library(micd)
   library(RhpcBLASctl)
   library(marginaleffects)
-  
+
   # allow BLAS to use all cores by default
   blas_set_num_threads(get_num_cores())
 
