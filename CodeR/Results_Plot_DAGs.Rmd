@@ -1,10 +1,10 @@
 ---
 title:    "Latent Gender Score"
-subtitle: "Process Data: Causal Discovery"
+subtitle: "Plot DAGs from Causal Discovery"
 author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
            Hans-Aloys Wischmann, Mascha Kern"
 date:     "** **\n\n
-           Revised:  April 07, 2025\n\n
+           Revised:  February 24, 2026\n\n
            Executed: `r format(Sys.time(), '%B %d, %Y')`"
 output:   "word_document"
 ---
@@ -46,7 +46,7 @@ output:   "word_document"
   layout_DAG <- read_xlsx(data_vpos_file)
 ```
 
-## Plot: Domain Knowledge DAG, Causal Discovery DAG
+## Plot: Domain Knowledge DAG, Causal Discovery DAGs
 
 ```{r plot_DAGs}
   plot_DAG(DAG_know, layout_DAG %>% filter(source == "know"), "./Results_Domain_Knowledge_DAG")

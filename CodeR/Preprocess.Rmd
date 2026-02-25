@@ -4,7 +4,7 @@ subtitle: "Preprocess Data"
 author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
            Hans-Aloys Wischmann, Mascha Kern"
 date:     "** **\n\n
-           Revised: July 07, 2025\n\n
+           Revised: February 22, 2026\n\n
            Executed: `r format(Sys.time(), '%B %d, %Y')`"
 output:   "word_document"
 ---
@@ -189,7 +189,7 @@ output:   "word_document"
   rr_with_ci(m_glm, sprintf("Migraine: Unadjusted (Incident = %d of %d)", incidence_migraine, n_data_migraine))
 ```
 
-## Compute: Age,  Age at Immigration, Children in Household
+## Compute: Age, Age at Immigration, Children in Household
 
 ```{r children_in_household}
   # compute age and age at immigration
@@ -240,28 +240,33 @@ output:   "word_document"
     rename(migraine_prevalence_firstDx = first_migraine, stroke_prevalence_firstDx = first_stroke) %>%
     group_by(sex_binary) %>% reframe(across(everything(), ~sum(.x > 0, na.rm = TRUE))) %>%
     select(sex_binary, N_prev, contains("prevalence"), N_inci_mig, migraine_incidence, N_inci_str, stroke_incidence)
-  names(dx_incidence_table) <- gsub("_", "\n", names(dx_incidence_table))
-  dx_incidence_table %>%                                  
+  rbind(dx_incidence_table, dx_incidence_table %>% reframe(across(!sex_binary, ~sum(.x)), sex_binary = "*")) %>%                                
     flextable() %>% set_caption("Adults: Prevalence and Incidence of Dx by Sex") %>% autofit()
 
+  # remove subjects without endpoint
+  df_analysis <- df_analysis %>%
+    filter(!is.na(migraine_incidence), !is.na(stroke_incidence))
+
+  # document flow
+  print("Participants (Valid data elements)")
+  print(sprintf("All:       %6d", n_distinct(df_all$pid)))
+  print(sprintf("Adults:    %6d", n_distinct(df_adults$pid)))
+  print(sprintf("Recent:    %6d", n_distinct(df_recent$pid)))
+  print(sprintf("Endpoints: %6d", nrow(df_analysis)))
+  
   # remove prevalent subjects
   df_analysis <- df_analysis %>%
-    filter(!is.na(migraine_incidence), !is.na(stroke_incidence)) %>%
     filter(first_migraine == 0, first_stroke == 0) %>%
     select(-syear, -first_migraine, -first_stroke)
 
-  # document flow for data sets
-  print("Participants (Valid data elements)")
-  print(sprintf("All:       %6d <- %8d", n_distinct(df_all$pid),    sum(!is.na(df_all    %>% select(-pid, -syear)))))
-  print(sprintf("Adults:    %6d <- %8d", n_distinct(df_adults$pid), sum(!is.na(df_adults %>% select(-pid, -syear)))))
-  print(sprintf("Recent:    %6d <- %8d", n_distinct(df_recent$pid), sum(!is.na(df_recent %>% select(-pid, -syear)))))
-  print(sprintf("Analysis:  %6d <- %8d", nrow(df_analysis),         sum(!is.na(df_analysis))))
-  print(sprintf("Weight!=0: %6d",        nrow(df_analysis %>% filter(!is.na(weight_factor)))))
+  # document flow
+  print(sprintf("Analysis:  %6d", nrow(df_analysis)))
+  print(sprintf("Weight!=0: %6d", nrow(df_analysis %>% filter(!is.na(weight_factor)))))
 
   print(sprintf("Incidence over study years (excluding prevalent Migraine or prevalent Stroke), N=%d: Migraine (%d), Stroke (%d)",
                 nrow(df_analysis),
-                sum(df_analysis$migraine_incidence == 1, na.rm = TRUE),
-                sum(df_analysis$stroke_incidence   == 1, na.rm = TRUE)))
+                sum(df_analysis$migraine_incidence == 1),
+                sum(df_analysis$stroke_incidence   == 1)))
 
   # document number of valid data points
   df_table1 <- df_analysis %>% mutate(gross_hourly_wage = current_monthly_gross_labor_income / (4.35 * work_time))
