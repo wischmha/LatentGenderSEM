@@ -1,6 +1,6 @@
 # Charité - Universitätsmedizin Berlin, Institut für Public Health
 # Mascha Kern
-# February 23, 2026
+# March 27, 2026
 
 # Common outcome regressions: Potential pre-Dx risk factors and pre-Dx behavior(s)
 m_dx <- "
@@ -32,6 +32,22 @@ sem_regressions_model <- "
   gross_hourly_wage                  ~ east_german_residence + age_10y
 "
 
+residual_regressions_model <- "
+  # data-inspired (non-model-explained correlations in the residuals)
+  num_physician_visits               ~ age_10y
+  daily_hours_housework_weekdays     ~ age_10y
+  daily_hours_childcare_weekdays     ~ age_10y + current_mat_parent_leave
+  risk_taking_scale                  ~ age_10y + political_interest
+  current_mat_parent_leave           ~ age_10y + num_children_in_household
+  employment_status_imp              ~ age_10y + num_children_in_household + partner         + highest_educational_degree
+  political_interest                 ~ age_10y + immigration_history + employment_status_imp + highest_educational_degree
+  highest_educational_degree         ~ age_10y + immigration_history
+  num_children_in_household          ~ age_10y + immigration_history + partner
+  partner                            ~ age_10y + highest_educational_degree
+  gross_hourly_wage                  ~ employment_status_imp
+  current_monthly_gross_labor_income ~ daily_hours_childcare_weekdays + daily_hours_housework_weekdays + highest_educational_degree + partner + gross_hourly_wage
+"
+
 # remove age_10y from models that will be computed by age_group
 sem_measurement_model_wo_age <- str_replace_all(sem_measurement_model, c("[+] *age_10y *" = "", " *age_10y *[+]" = ""))
 sem_regressions_model_wo_age <- str_replace_all(sem_regressions_model, c("[+] *age_10y *" = "", " *age_10y *[+]" = ""))
@@ -47,7 +63,7 @@ sem_model_wo_age <-
         "group: 3\n", sem_measurement_model_wo_age, sem_regressions_model_wo_age, m_dx_wo_age, s_dx_wo_age, "\n",
         "group: 2\n", sem_measurement_model_wo_age, sem_regressions_model_wo_age, m_dx_wo_age, s_dx_wo_age, "\n",
         "group: 1\n", sem_measurement_model_wo_age, sem_regressions_model_wo_age, m_dx_wo_age, s_dx_wo_age, sep = "")
-sem_model_sens <- str_replace_all(sem_model, c("gender.*~.*1.0.*[*].*sex_binary" = "gender ~~ 1.0 * gender"))
+sem_model_sens <- str_replace_all(paste(sem_measurement_model, sem_regressions_model, residual_regressions_model, m_dx, s_dx, sep = ""), c("gender.*~.*1.0.*[*].*sex_binary" = "gender ~~ 1.0 * gender"))
 
 # GDM model (logistic regression for sex_binary, same predictors as in SEM for gender, including 2nd level predictors)
 gdm_model <- "

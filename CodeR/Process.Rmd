@@ -4,7 +4,7 @@ subtitle: "Process Data: Fit SEM and GDM"
 author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
            Hans-Aloys Wischmann, Mascha Kern"
 date:     "** **\n\n
-           Revised:  February 23, 2026\n\n
+           Revised:  March 27, 2026\n\n
            Executed: `r format(Sys.time(), '%B %d, %Y')`"
 output:   "word_document"
 ---
@@ -53,12 +53,31 @@ output:   "word_document"
                                                                                             sampling.weights.normalization = "none",
                                                                                             observed.information = "h1")
   sem_mi_sns <- sem.mi(sem_model_sens,      data = as.mids(df_con), auto.fix.first = FALSE)
-  
 
   tab_mi_all <- summary(sem_mi_all, ci = TRUE, fit.measures = TRUE, output = "data.frame")
   tab_mi_age <- summary(sem_mi_age, ci = TRUE, fit.measures = TRUE, output = "data.frame")
   tab_mi_wgh <- summary(sem_mi_wgh, ci = TRUE, fit.measures = TRUE, output = "data.frame")
   tab_mi_sns <- summary(sem_mi_sns, ci = TRUE, fit.measures = TRUE, output = "data.frame")
+
+  # check correlations of residuals (main model with multiple imputation)
+  # cf. Tips for Inspecting Residuals, Rex B. Kline: Principles and Practice of Structural Equation Modeling
+  res_mi_all <- lavResiduals.mi(sem_mi_all, type = "cor")
+  as.data.frame(res_mi_all$cov) %>% rownames_to_column("V1") %>%
+    pivot_longer(!V1, names_to = "V2", values_to = "Cov") %>% arrange(desc(abs(Cov))) %>%
+    filter(abs(Cov) > 0.1, V1 < V2) %>% mutate(Pair = sprintf("%s <-> %s", V1, V2), Cov = sprintf("%.02f", Cov)) %>%
+    select(Cov, Pair) %>% 
+    flextable() %>% set_caption("SEM (sem.mi, main model) residual (non-model-explained) correlations") %>%
+      align(j = 1, align = "right", part = "body") %>% autofit()
+
+  # check correlations of residuals (sensitivity model with multiple imputation)
+  # cf. Tips for Inspecting Residuals, Rex B. Kline: Principles and Practice of Structural Equation Modeling
+  res_mi_sns <- lavResiduals.mi(sem_mi_sns, type = "cor")
+  as.data.frame(res_mi_sns$cov) %>% rownames_to_column("V1") %>%
+    pivot_longer(!V1, names_to = "V2", values_to = "Cov") %>% arrange(desc(abs(Cov))) %>%
+    filter(abs(Cov) > 0.1, V1 < V2) %>% mutate(Pair = sprintf("%s <-> %s", V1, V2), Cov = sprintf("%.02f", Cov)) %>%
+    select(Cov, Pair) %>% 
+    flextable() %>% set_caption("SEM (sem.mi, sensitivity model) residual (non-model-explained) correlations") %>%
+      align(j = 1, align = "right", part = "body") %>% autofit()
 ```
 ## SEM: Outcomes
 
