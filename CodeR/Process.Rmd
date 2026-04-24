@@ -47,29 +47,25 @@ output:   "word_document"
   print("SEM Model without link between sex_binary and gender")
   writeLines(sem_model_sens)
 
-  # analyze un-imputed data only
-  sem_cc <- sem(sem_model, data = df_con %>% filter(.imp == 0))
-  tab_cc <- summary(sem_cc, ci = TRUE, fit.measures = TRUE)
-  tab_cc$pe %>% filter(grepl("incidence", lhs), op == "~") %>%
-    mutate(estimate = sprintf("%.3f [%.3f, %.3f]", est, ci.lower, ci.upper)) %>%
-    mutate(sig = print_p(pvalue)) %>%
-    select(incidence = lhs, predictor = rhs, estimate, sig) %>%
-    mutate(incidence = gsub("_incidence", "", incidence)) %>%
-    flextable() %>% set_caption("SEM Regressions (unimputed data, main model)") %>%
-    hline(i = 9) %>% autofit()
-
   # analyze imputed data set
-  sem_mi_all <- sem.mi(sem_model,           data = as.mids(df_con), auto.fix.first = FALSE)
-  sem_mi_age <- sem.mi(sem_model_wo_age,    data = as.mids(df_con), auto.fix.first = FALSE, group = "age_group")
-  sem_mi_wgh <- sem.mi(sem_model,           data = as.mids(df_con), auto.fix.first = FALSE, sampling.weights = "weight_factor",
+  sem_mi_all <- sem.mi(sem_model,        data = as.mids(df_con), auto.fix.first = FALSE)
+  sem_mi_sns <- sem.mi(sem_model_sens,   data = as.mids(df_con), auto.fix.first = FALSE)
+  sem_mi_age <- sem.mi(sem_model_wo_age, data = as.mids(df_con), auto.fix.first = FALSE, group = "age_group")
+  sem_mi_wgh <- sem.mi(sem_model,        data = as.mids(df_con), auto.fix.first = FALSE, sampling.weights = "weight_factor",
+                                                                                         sampling.weights.normalization = "none",
+                                                                                         observed.information = "h1")
+
+  # analyze unimputed data only, with weighting (important for representativeness, partially mitigate missing data)
+  sem_unimp  <- sem(sem_model, data = df_con %>% filter(.imp == 0), auto.fix.first = FALSE, sampling.weights = "weight_factor",
                                                                                             sampling.weights.normalization = "none",
                                                                                             observed.information = "h1")
-  sem_mi_sns <- sem.mi(sem_model_sens,      data = as.mids(df_con), auto.fix.first = FALSE)
 
+  # extract results from fit objects
   tab_mi_all <- summary(sem_mi_all, ci = TRUE, fit.measures = TRUE, output = "data.frame")
+  tab_mi_sns <- summary(sem_mi_sns, ci = TRUE, fit.measures = TRUE, output = "data.frame")
   tab_mi_age <- summary(sem_mi_age, ci = TRUE, fit.measures = TRUE, output = "data.frame")
   tab_mi_wgh <- summary(sem_mi_wgh, ci = TRUE, fit.measures = TRUE, output = "data.frame")
-  tab_mi_sns <- summary(sem_mi_sns, ci = TRUE, fit.measures = TRUE, output = "data.frame")
+  tab_unimp  <- summary(sem_unimp,  ci = TRUE, fit.measures = TRUE)
 
   # check correlations of residuals (main model with multiple imputation)
   # cf. Tips for Inspecting Residuals, Rex B. Kline: Principles and Practice of Structural Equation Modeling
@@ -121,6 +117,13 @@ output:   "word_document"
     pivot_wider(names_from = group, values_from = est) %>%
     flextable() %>% set_caption("SEM (sem.mi) Regressions by Age Group, unweighted") %>% autofit() %>%
     hline(i = 8) %>% autofit()
+  tab_unimp$pe %>% filter(grepl("incidence", lhs), op == "~") %>%
+    mutate(estimate = sprintf("%.3f [%.3f, %.3f]", est, ci.lower, ci.upper)) %>%
+    mutate(sig = print_p(pvalue)) %>%
+    select(incidence = lhs, predictor = rhs, estimate, sig) %>%
+    mutate(incidence = gsub("_incidence", "", incidence)) %>%
+    flextable() %>% set_caption("SEM Regressions (unimputed data, main model, weighted)") %>%
+    hline(i = 9) %>% autofit()
 
   # Document fit metrics
   all <- tab_mi_all$fit[c("rmsea", "srmr", "aic")] # unweighted
@@ -235,6 +238,6 @@ output:   "word_document"
   tab_mi_age
   tab_mi_wgh
   tab_mi_sns
-  tab_cc
+  tab_unimp
   print(Sys.time() - start.time)
 ```
