@@ -4,7 +4,7 @@ subtitle: "Process Data: Fit SEM and GDM"
 author:   "Charité - Universitätsmedizin Berlin, Institut für Public Health\n\n
            Hans-Aloys Wischmann, Mascha Kern"
 date:     "** **\n\n
-           Revised:  March 27, 2026\n\n
+           Revised:  April 24, 2026\n\n
            Executed: `r format(Sys.time(), '%B %d, %Y')`"
 output:   "word_document"
 ---
@@ -47,6 +47,18 @@ output:   "word_document"
   print("SEM Model without link between sex_binary and gender")
   writeLines(sem_model_sens)
 
+  # analyze un-imputed data only
+  sem_cc <- sem(sem_model, data = df_con %>% filter(.imp == 0))
+  tab_cc <- summary(sem_cc, ci = TRUE, fit.measures = TRUE)
+  tab_cc$pe %>% filter(grepl("incidence", lhs), op == "~") %>%
+    mutate(estimate = sprintf("%.3f [%.3f, %.3f]", est, ci.lower, ci.upper)) %>%
+    mutate(sig = print_p(pvalue)) %>%
+    select(incidence = lhs, predictor = rhs, estimate, sig) %>%
+    mutate(incidence = gsub("_incidence", "", incidence)) %>%
+    flextable() %>% set_caption("SEM Regressions (unimputed data, main model)") %>%
+    hline(i = 9) %>% autofit()
+
+  # analyze imputed data set
   sem_mi_all <- sem.mi(sem_model,           data = as.mids(df_con), auto.fix.first = FALSE)
   sem_mi_age <- sem.mi(sem_model_wo_age,    data = as.mids(df_con), auto.fix.first = FALSE, group = "age_group")
   sem_mi_wgh <- sem.mi(sem_model,           data = as.mids(df_con), auto.fix.first = FALSE, sampling.weights = "weight_factor",
@@ -223,5 +235,6 @@ output:   "word_document"
   tab_mi_age
   tab_mi_wgh
   tab_mi_sns
+  tab_cc
   print(Sys.time() - start.time)
 ```
